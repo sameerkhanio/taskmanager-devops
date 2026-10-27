@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+db.sqlite3
+staticfiles/
+.env
+venv/
+.venv/
+terraform.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
