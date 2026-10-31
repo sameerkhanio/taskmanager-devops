@@ -180,7 +180,7 @@ resource "aws_iam_role" "github_actions" {
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-            "token.actions.githubusercontent.com:sub" = "repo:sameerkhanio/taskmanager-devops:ref:refs/heads/main"
+            "token.actions.githubusercontent.com:sub" = "repo:sameerkhanio@148336292/taskmanager-devops@1436114131:ref:refs/heads/main"
           }
         }
       }
@@ -214,8 +214,7 @@ resource "aws_iam_role_policy" "github_actions" {
           "ecr:UploadLayerPart",
           "ecr:CompleteLayerUpload",
           "ecr:PutImage",
-          "ecr:BatchGetImage",
-          "ssm:ListCommandInvocations"
+          "ecr:BatchGetImage"
         ]
         Resource = aws_ecr_repository.taskmanager.arn
       },
@@ -223,7 +222,8 @@ resource "aws_iam_role_policy" "github_actions" {
         Effect = "Allow"
         Action = [
           "ssm:SendCommand",
-          "ssm:GetCommandInvocation"
+          "ssm:GetCommandInvocation",
+          "ssm:ListCommandInvocations"
         ]
         Resource = "*"
       }
