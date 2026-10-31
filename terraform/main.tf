@@ -86,9 +86,9 @@ resource "aws_security_group" "ec2" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "Django application"
-    from_port   = 8000
-    to_port     = 8000
+    description = "HTTP web access"
+    from_port   = 80
+    to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -153,6 +153,85 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
+resource "aws_iam_openid_connect_provider" "github" {
+  url = "https://token.actions.githubusercontent.com"
+
+  client_id_list = [
+    "sts.amazonaws.com"
+  ]
+
+  tags = {
+    Name = "github-actions-oidc"
+  }
+}
+
+resource "aws_iam_role" "github_actions" {
+  name = "taskmanager-github-actions-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = aws_iam_openid_connect_provider.github.arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+            "token.actions.githubusercontent.com:sub" = "repo:sameerkhanio/taskmanager-devops:ref:refs/heads/main"
+          }
+        }
+      }
+    ]
+  })
+
+  tags = {
+    Name = "taskmanager-github-actions"
+  }
+}
+
+resource "aws_iam_role_policy" "github_actions" {
+  name = "taskmanager-github-actions-policy"
+  role = aws_iam_role.github_actions.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+          "ecr:PutImage",
+          "ecr:BatchGetImage",
+          "ssm:ListCommandInvocations"
+        ]
+        Resource = aws_ecr_repository.taskmanager.arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:SendCommand",
+          "ssm:GetCommandInvocation"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+
 resource "aws_iam_role" "ec2_ssm" {
   name = "taskmanager-ec2-ssm-role"
   assume_role_policy = jsonencode({
@@ -178,6 +257,11 @@ resource "aws_iam_role_policy_attachment" "ssm_managed_instance" {
 
 }
 
+resource "aws_iam_role_policy_attachment" "ec2_ecr_read" {
+  role       = aws_iam_role.ec2_ssm.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
 resource "aws_iam_instance_profile" "ec2_ssm" {
   name = "taskmanager-ec2-instance-profile"
   role = aws_iam_role.ec2_ssm.name
@@ -195,12 +279,23 @@ resource "aws_instance" "app" {
   user_data = <<-EOF
   #!/bin/bash
   dnf update -y
-  dnf install -y docker
+  dnf install -y docker nginx
+  
   systemctl enable --now docker
+  systemctl enable --now amazon-ssm-agent
+
+  mkdir -p /opt/taskmanager/staticfiles
+
+  cat > /etc/nginx/conf.d/taskmanager.conf <<'NGINX'
+  ${file("${path.module}/../nginx.conf")}
+  NGINX
+
+  rm -f /etc/nginx/conf.d/default.conf
+
+  nginx -t
+  systemctl enable --now nginx
   EOF
-  tags = {
-    Name = "taskmanager-ec2"
-  }
+
 }
 
 resource "aws_db_subnet_group" "main" {
@@ -239,3 +334,21 @@ resource "aws_db_instance" "main" {
   }
 }
 
+resource "aws_ecr_repository" "taskmanager" {
+  name                 = "taskmanager-devops"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+
+  tags = {
+    Name    = "taskmanager-devops"
+    Project = "taskmanager"
+  }
+
+}
