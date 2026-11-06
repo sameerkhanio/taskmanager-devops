@@ -58,23 +58,120 @@ jobs:
         run: |
           set -e
 
+          DEPLOY_SCRIPT=$(cat <<EOF
+          set -eu
+
+          IMAGE_URI="$IMAGE_URI"
+          PREVIOUS_CONTAINER="taskmanager-previous"
+          STATIC_DIR="/opt/taskmanager/staticfiles"
+          STATIC_NEW="/opt/taskmanager/staticfiles-new"
+          STATIC_BACKUP="/opt/taskmanager/staticfiles-backup"
+
+          OLD_RENAMED=0
+          NEW_ATTEMPTED=0
+          STATIC_SWAPPED=0
+
+          rollback() {
+            STATUS=\$?
+            trap - EXIT
+
+            if [ "\$STATUS" -ne 0 ]; then
+              echo "Deployment failed. Starting rollback..."
+
+              if [ "\$NEW_ATTEMPTED" -eq 1 ]; then
+                sudo docker rm -f taskmanager || true
+              fi
+
+              if [ "\$OLD_RENAMED" -eq 1 ]; then
+                sudo docker start "\$PREVIOUS_CONTAINER" || true
+                sudo docker rename "\$PREVIOUS_CONTAINER" taskmanager || true
+              fi
+
+              if [ "\$STATIC_SWAPPED" -eq 1 ]; then
+                sudo rm -rf "\$STATIC_DIR"
+                sudo mv "\$STATIC_BACKUP" "\$STATIC_DIR" || true
+              fi
+
+              echo "Rollback attempted."
+            fi
+
+            exit "\$STATUS"
+          }
+
+          trap rollback EXIT
+
+          echo "Logging into ECR..."
+          aws ecr get-login-password --region ap-northeast-3 | sudo docker login --username AWS --password-stdin 923788822780.dkr.ecr.ap-northeast-3.amazonaws.com
+
+          echo "Pulling new image..."
+          sudo docker pull "\$IMAGE_URI"
+
+          echo "Running database migrations..."
+          sudo docker run --rm --env-file /opt/taskmanager/.env "\$IMAGE_URI" python manage.py migrate --noinput
+
+          echo "Preparing static files..."
+          sudo rm -rf "\$STATIC_NEW" "\$STATIC_BACKUP"
+          sudo mkdir -p "\$STATIC_NEW"
+
+          sudo docker rm -f "\$PREVIOUS_CONTAINER" || true
+
+          echo "Preserving current container..."
+          sudo docker rename taskmanager "\$PREVIOUS_CONTAINER"
+          OLD_RENAMED=1
+          sudo docker stop "\$PREVIOUS_CONTAINER"
+
+          echo "Starting new container..."
+          NEW_ATTEMPTED=1
+          sudo docker run -d \
+            --name taskmanager \
+            --restart unless-stopped \
+            --env-file /opt/taskmanager/.env \
+            -p 127.0.0.1:8000:8000 \
+            "\$IMAGE_URI"
+
+          echo "Running health checks..."
+          HEALTHY=0
+
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if curl -fsSL -o /dev/null http://127.0.0.1/; then
+              HEALTHY=1
+              echo "Health check passed."
+              break
+            fi
+
+            echo "Waiting for application... attempt \$i/12"
+            sleep 5
+          done
+
+          if [ "\$HEALTHY" -ne 1 ]; then
+            echo "Health check failed."
+            exit 1
+          fi
+
+          echo "Preparing new static files..."
+          sudo docker cp taskmanager:/app/staticfiles/. "\$STATIC_NEW/"
+          sudo chmod -R 755 "\$STATIC_NEW"
+
+          echo "Switching static files..."
+          sudo mv "\$STATIC_DIR" "\$STATIC_BACKUP"
+          STATIC_SWAPPED=1
+          sudo mv "\$STATIC_NEW" "\$STATIC_DIR"
+
+          echo "Deployment successful."
+          trap - EXIT
+
+          sudo docker rm -f "\$PREVIOUS_CONTAINER"
+          sudo rm -rf "\$STATIC_BACKUP" "\$STATIC_NEW"
+
+          echo "Old container and backup cleaned up."
+          EOF
+          )
+
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy Task Manager $GITHUB_SHA" \
-            --parameters "$(jq -n --arg image "$IMAGE_URI" '{
-              commands: [
-                "set -e",
-                "aws ecr get-login-password --region ap-northeast-3 | sudo docker login --username AWS --password-stdin 923788822780.dkr.ecr.ap-northeast-3.amazonaws.com",
-                ("sudo docker pull " + $image),
-                ("sudo docker run --rm --env-file /opt/taskmanager/.env " + $image + " python manage.py migrate --noinput"),
-                "sudo docker rm -f taskmanager || true",
-                ("sudo docker run -d --name taskmanager --restart unless-stopped --env-file /opt/taskmanager/.env -p 127.0.0.1:8000:8000 " + $image),
-                "sudo docker cp taskmanager:/app/staticfiles/. /opt/taskmanager/staticfiles/",
-                "sudo chmod -R 755 /opt/taskmanager/staticfiles",
-                "echo Deployment completed"
-              ]
-            }')" \
+            --parameters "$(jq -n --arg script "$DEPLOY_SCRIPT" '{commands: [$script]}')" \
             --query "Command.CommandId" \
             --output text)
 
@@ -95,5 +192,4 @@ jobs:
           aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
             --instance-id "$INSTANCE_ID" \
-            --query "StandardOutputContent" \
-            --output text
+            --output json
