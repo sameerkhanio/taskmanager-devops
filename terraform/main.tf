@@ -268,6 +268,24 @@ resource "aws_iam_instance_profile" "ec2_ssm" {
 
 }
 
+resource "aws_iam_role_policy" "ec2_parameter_store" {
+  name = "taskmanager-ec2-parameter-store"
+  role = aws_iam_role.ec2_ssm.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath"
+      ]
+      Resource = "arn:aws:ssm:ap-northeast-3:923788822780:parameter/taskmanager/*"
+    }]
+  })
+}
+
 resource "aws_instance" "app" {
   ami                         = data.aws_ami.amazon_linux.id
   instance_type               = var.instance_type
