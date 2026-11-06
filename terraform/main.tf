@@ -286,6 +286,35 @@ resource "aws_iam_role_policy" "ec2_parameter_store" {
   })
 }
 
+resource "aws_cloudwatch_log_group" "taskmanager" {
+  name              = "/taskmanager/application"
+  retention_in_days = 7
+
+  tags = {
+    Name    = "taskmanager-logs"
+    Project = "taskmanager"
+  }
+}
+
+resource "aws_iam_role_policy" "ec2_cloudwatch_logs" {
+  name = "taskmanager-ec2-cloudwatch-logs"
+  role = aws_iam_role.ec2_ssm.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "${aws_cloudwatch_log_group.taskmanager.arn}:*"
+      }
+    ]
+  })
+}
+
 resource "aws_instance" "app" {
   ami                         = data.aws_ami.amazon_linux.id
   instance_type               = var.instance_type

@@ -125,6 +125,10 @@ jobs:
           sudo docker run -d \
             --name taskmanager \
             --restart unless-stopped \
+            --log-driver awslogs \
+            --log-opt awslogs-region=ap-northeast-3 \
+            --log-opt awslogs-group=/taskmanager/application \
+            --log-opt awslogs-stream=taskmanager-${GITHUB_SHA} \
             --env-file /opt/taskmanager/.env \
             -p 127.0.0.1:8000:8000 \
             "\$IMAGE_URI"
